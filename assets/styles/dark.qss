@@ -1,0 +1,15 @@
+/* Master Stylesheet for 4AM Narrative Cockpit */
+
+/* Root and Base - Soft Charcoal like VS Code / Obsidian */
+QMainWindow, QWidget#centralWidget {
+    background-color: #1e1e1e; 
+}
+
+/* Main Editor Component Placeholder */
+#workspace {
+    background-color: #1e1e1e;
+}
+
+QLabel {
+    color: #cccccc; /* Soft off-white to prevent glare */
+}

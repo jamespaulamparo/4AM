@@ -1,0 +1,9 @@
+venv/
+dist/
+build/
+__pycache__/
+*.exe
+*.spec
+.history/
+_attachments/
+session.json
