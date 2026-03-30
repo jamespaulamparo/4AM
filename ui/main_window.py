@@ -4,12 +4,11 @@ import json
 import ctypes
 import shutil
 from datetime import datetime
-from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
+from PySide6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout,
                              QHBoxLayout, QDockWidget, QLabel, QPushButton,
-                             QPlainTextEdit, QTextEdit, QLineEdit) 
-from PySide6.QtGui import QFontDatabase, QShortcut, QKeySequence
+                             QPlainTextEdit, QTextEdit, QLineEdit, QApplication) 
+from PySide6.QtGui import QFontDatabase, QShortcut, QKeySequence, QIcon
 from PySide6.QtCore import Qt, QSize, QTimer, QByteArray
-from PySide6.QtGui import QIcon
 
 from ui.editor import DualEditorEngine 
 from ui.hud import ReactiveHUD
@@ -26,6 +25,13 @@ class CoreFrameworkWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("4AM")
+        
+        icon_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'logo.ico')
+        if os.path.exists(icon_path):
+            self.setWindowIcon(QIcon(icon_path))
+        elif os.path.exists("logo.ico"): 
+            self.setWindowIcon(QIcon("logo.ico"))
+            
         self.resize(1300, 800) 
         self.setMinimumSize(QSize(1000, 600))
 
@@ -36,21 +42,23 @@ class CoreFrameworkWindow(QMainWindow):
         self.setDockNestingEnabled(True)
 
         self.dummy_central = QWidget()
+        self.dummy_central.setStyleSheet("background-color: #1a1a1a;") 
         self.setCentralWidget(self.dummy_central)
-        self.dummy_central.hide()
 
         self.sidebar = VaultSidebar(self)
         self.sidebar_dock = QDockWidget("", self)
+        # FIX: Must set object name for saveState to work!
+        self.sidebar_dock.setObjectName("SidebarDock")
         self.sidebar_dock.setTitleBarWidget(QWidget()) 
         self.sidebar_dock.setWidget(self.sidebar)
         self.sidebar_dock.setFeatures(QDockWidget.NoDockWidgetFeatures) 
         self.addDockWidget(Qt.LeftDockWidgetArea, self.sidebar_dock)
         
-        # Locks sidebar to 200px on very first load before memory kicks in
         self.resizeDocks([self.sidebar_dock], [200], Qt.Horizontal)
 
         self.hud = ReactiveHUD()
         self.hud_dock = QDockWidget("", self)
+        self.hud_dock.setObjectName("HudDock")
         self.hud_dock.setTitleBarWidget(QWidget()) 
         self.hud_dock.setWidget(self.hud)
         self.addDockWidget(Qt.RightDockWidgetArea, self.hud_dock)
@@ -59,8 +67,7 @@ class CoreFrameworkWindow(QMainWindow):
         self.open_docks = {}
         self.is_focus_mode = False
         self.hud_visible_in_focus = False
-
-        self.setWindowIcon(QIcon("logo.ico"))
+        self._is_navigating = False
 
         self.sidebar.file_selected.connect(self.route_file_click) 
 
@@ -72,6 +79,9 @@ class CoreFrameworkWindow(QMainWindow):
         QShortcut(QKeySequence("Ctrl+Shift+E"), self).activated.connect(self.center_align_text)
         QShortcut(QKeySequence("Ctrl+Shift+F"), self).activated.connect(self.trigger_omni_search)
         QShortcut(QKeySequence("Ctrl+F"), self).activated.connect(self.trigger_local_search)
+        
+        QShortcut(QKeySequence("Alt+Left"), self).activated.connect(self.navigate_back_active)
+        QShortcut(QKeySequence("Alt+Right"), self).activated.connect(self.navigate_forward_active)
 
         self.snapshot_timer = QTimer(self)
         self.snapshot_timer.timeout.connect(self.take_vault_snapshots)
@@ -79,7 +89,59 @@ class CoreFrameworkWindow(QMainWindow):
 
         self.load_session()
 
-    def route_file_click(self, file_path, force_new_pane=False):
+    def get_active_dock(self):
+        for dock in self.open_docks.values():
+            if dock.isActiveWindow() or dock.hasFocus():
+                return dock
+        if self.open_docks:
+            return list(self.open_docks.values())[0]
+        return None
+
+    def navigate_back_active(self):
+        dock = self.get_active_dock()
+        if dock: self.navigate_back(dock)
+
+    def navigate_forward_active(self):
+        dock = self.get_active_dock()
+        if dock: self.navigate_forward(dock)
+
+    def navigate_back(self, dock):
+        if hasattr(dock, 'history_back') and dock.history_back:
+            prev_path = dock.history_back.pop()
+            dock.history_forward.append(dock.current_path)
+            self._is_navigating = True
+            self.route_file_click(prev_path, force_new_pane=False, target_dock=dock)
+            self._is_navigating = False
+
+    def navigate_forward(self, dock):
+        if hasattr(dock, 'history_forward') and dock.history_forward:
+            next_path = dock.history_forward.pop()
+            dock.history_back.append(dock.current_path)
+            self._is_navigating = True
+            self.route_file_click(next_path, force_new_pane=False, target_dock=dock)
+            self._is_navigating = False
+
+    def show_backlinks(self, file_path):
+        vault_path = self.sidebar.file_model.rootPath()
+        if not vault_path: return
+        file_name = os.path.basename(file_path).replace('.md', '').replace('.canvas', '')
+        search_query = f"[[{file_name}]]"
+
+        self.oracle = OmniSearch(self, vault_path)
+        self.oracle.file_selected.connect(lambda path: self.route_file_click(path, force_new_pane=False))
+        
+        rect = self.geometry()
+        self.oracle.move(rect.center().x() - self.oracle.width() // 2, rect.center().y() - self.oracle.height() // 2)
+        self.oracle.show()
+        
+        self.oracle.search_bar.setText(search_query)
+        self.oracle.search_bar.setFocus()
+
+    def route_file_click(self, file_path, force_new_pane=False, target_dock=None):
+        # FIX: Catch navigation errors if a file was deleted manually in the background!
+        if not os.path.exists(file_path): 
+            return
+
         self.current_active_file = file_path 
         
         if file_path in self.open_docks:
@@ -89,6 +151,7 @@ class CoreFrameworkWindow(QMainWindow):
 
         if file_path.endswith('.canvas'):
             engine = CanvasEngine()
+            engine.link_clicked.connect(self.handle_wiki_link)
         else:
             engine = DualEditorEngine()
             engine.text_scanned.connect(self.hud.process_text)
@@ -97,21 +160,38 @@ class CoreFrameworkWindow(QMainWindow):
             
         engine.load_file(file_path)
 
-        active_dock = None
+        active_dock = target_dock
         active_path = None
         
-        if not force_new_pane:
+        if active_dock:
+            for p, d in self.open_docks.items():
+                if d == active_dock:
+                    active_path = p
+                    break
+        elif not force_new_pane:
             for path, dock in self.open_docks.items():
                 if dock.isActiveWindow() or dock.hasFocus():
                     active_dock = dock
                     active_path = path
                     break
-                    
             if not active_dock and self.open_docks:
                 active_path, active_dock = list(self.open_docks.items())[0]
 
-        file_name = os.path.basename(file_path)
+        if active_dock:
+            if not hasattr(active_dock, 'history_back'):
+                active_dock.history_back = []
+                active_dock.history_forward = []
+            if not self._is_navigating and hasattr(active_dock, 'current_path') and active_dock.current_path:
+                active_dock.history_back.append(active_dock.current_path)
+                active_dock.history_forward.clear()
+            active_dock.current_path = file_path
+        else:
+            engine.history_back = []
+            engine.history_forward = []
 
+        file_name = os.path.basename(file_path)
+        nav_style = "QPushButton { background: transparent; color: #666; border: none; font-weight: bold; font-size: 14px; } QPushButton:hover { color: #5bc0de; } QPushButton:disabled { color: #333; }"
+        
         if active_dock and not force_new_pane:
             old_widget = active_dock.widget()
             active_dock.setWidget(engine)
@@ -120,16 +200,36 @@ class CoreFrameworkWindow(QMainWindow):
             title_layout = QHBoxLayout(title_bar)
             title_layout.setContentsMargins(15, 5, 15, 5)
             
+            btn_back = QPushButton("◀")
+            btn_back.setFixedSize(20, 20)
+            btn_back.setStyleSheet(nav_style)
+            btn_back.clicked.connect(lambda checked=False, d=active_dock: self.navigate_back(d))
+            btn_back.setEnabled(len(active_dock.history_back) > 0)
+
+            btn_forward = QPushButton("▶")
+            btn_forward.setFixedSize(20, 20)
+            btn_forward.setStyleSheet(nav_style)
+            btn_forward.clicked.connect(lambda checked=False, d=active_dock: self.navigate_forward(d))
+            btn_forward.setEnabled(len(active_dock.history_forward) > 0)
+            
             title_label = QLabel(file_name.upper())
             title_label.setStyleSheet("color: #666; font-weight: bold; font-size: 11px; letter-spacing: 1px;")
+            
+            btn_backlinks = QPushButton("🔗")
+            btn_backlinks.setFixedSize(20, 20)
+            btn_backlinks.setStyleSheet(nav_style)
+            btn_backlinks.setToolTip("Find Backlinks")
+            btn_backlinks.clicked.connect(lambda checked=False, p=file_path: self.show_backlinks(p))
             
             close_btn = QPushButton("✕")
             close_btn.setFixedSize(20, 20)
             close_btn.setStyleSheet("QPushButton { background: transparent; color: #555; border: none; font-weight: bold; } QPushButton:hover { color: #ff5555; }")
-            
             close_btn.clicked.connect(lambda checked=False, f=file_path: self.close_pane(f))
             
+            title_layout.addWidget(btn_back)
+            title_layout.addWidget(btn_forward)
             title_layout.addWidget(title_label)
+            title_layout.addWidget(btn_backlinks)
             title_layout.addStretch()
             
             search_bar = QLineEdit()
@@ -138,8 +238,8 @@ class CoreFrameworkWindow(QMainWindow):
             search_bar.setFixedWidth(150)
             search_bar.hide() 
             search_bar.setStyleSheet("background: #1a1a1a; color: #ccc; border: 1px solid #3a3a3a; border-radius: 4px; padding: 2px 8px; font-size: 11px;")
-            search_bar.textChanged.connect(lambda text, d=active_dock if active_dock and not force_new_pane else new_dock: self.execute_local_search(text, d))
-            search_bar.returnPressed.connect(lambda d=active_dock if active_dock and not force_new_pane else new_dock: self.find_next_local(d))
+            search_bar.textChanged.connect(lambda text, d=active_dock: self.execute_local_search(text, d))
+            search_bar.returnPressed.connect(lambda d=active_dock: self.find_next_local(d))
             
             title_layout.addWidget(search_bar)
             title_layout.addWidget(close_btn)
@@ -147,25 +247,53 @@ class CoreFrameworkWindow(QMainWindow):
             
             active_dock.setTitleBarWidget(title_bar) 
             
-            del self.open_docks[active_path]
+            if active_path:
+                del self.open_docks[active_path]
             self.open_docks[file_path] = active_dock
             old_widget.deleteLater() 
         else:
             new_dock = QDockWidget(file_name, self)
+            # FIX: Adding ObjectName using file_path allows PySide to remember where this dock goes!
+            new_dock.setObjectName(file_path)
+            
+            new_dock.history_back = []
+            new_dock.history_forward = []
+            new_dock.current_path = file_path
+            
             title_bar = QWidget()
             title_layout = QHBoxLayout(title_bar)
             title_layout.setContentsMargins(15, 5, 15, 5)
             
+            btn_back = QPushButton("◀")
+            btn_back.setFixedSize(20, 20)
+            btn_back.setStyleSheet(nav_style)
+            btn_back.clicked.connect(lambda checked=False, d=new_dock: self.navigate_back(d))
+            btn_back.setEnabled(False)
+
+            btn_forward = QPushButton("▶")
+            btn_forward.setFixedSize(20, 20)
+            btn_forward.setStyleSheet(nav_style)
+            btn_forward.clicked.connect(lambda checked=False, d=new_dock: self.navigate_forward(d))
+            btn_forward.setEnabled(False)
+            
             title_label = QLabel(file_name.upper())
             title_label.setStyleSheet("color: #666; font-weight: bold; font-size: 11px; letter-spacing: 1px;")
+            
+            btn_backlinks = QPushButton("🔗")
+            btn_backlinks.setFixedSize(20, 20)
+            btn_backlinks.setStyleSheet(nav_style)
+            btn_backlinks.setToolTip("Find Backlinks")
+            btn_backlinks.clicked.connect(lambda checked=False, p=file_path: self.show_backlinks(p))
             
             close_btn = QPushButton("✕")
             close_btn.setFixedSize(20, 20)
             close_btn.setStyleSheet("QPushButton { background: transparent; color: #555; border: none; font-weight: bold; } QPushButton:hover { color: #ff5555; }")
-            
             close_btn.clicked.connect(lambda checked=False, f=file_path: self.close_pane(f))
             
+            title_layout.addWidget(btn_back)
+            title_layout.addWidget(btn_forward)
             title_layout.addWidget(title_label)
+            title_layout.addWidget(btn_backlinks)
             title_layout.addStretch()
             
             search_bar = QLineEdit()
@@ -174,8 +302,8 @@ class CoreFrameworkWindow(QMainWindow):
             search_bar.setFixedWidth(150)
             search_bar.hide() 
             search_bar.setStyleSheet("background: #1a1a1a; color: #ccc; border: 1px solid #3a3a3a; border-radius: 4px; padding: 2px 8px; font-size: 11px;")
-            search_bar.textChanged.connect(lambda text, d=active_dock if active_dock and not force_new_pane else new_dock: self.execute_local_search(text, d))
-            search_bar.returnPressed.connect(lambda d=active_dock if active_dock and not force_new_pane else new_dock: self.find_next_local(d))
+            search_bar.textChanged.connect(lambda text, d=new_dock: self.execute_local_search(text, d))
+            search_bar.returnPressed.connect(lambda d=new_dock: self.find_next_local(d))
             
             title_layout.addWidget(search_bar)
             title_layout.addWidget(close_btn)
@@ -195,10 +323,7 @@ class CoreFrameworkWindow(QMainWindow):
             del self.open_docks[file_path]
 
     def trigger_reading_mode(self):
-        # 1. Ask PySide what widget the user is actually typing or looking at right now
         focus_widget = QApplication.focusWidget()
-        
-        # 2. Climb up the UI tree to find the Editor Engine that owns it
         parent = focus_widget
         while parent:
             if isinstance(parent, DualEditorEngine):
@@ -206,7 +331,6 @@ class CoreFrameworkWindow(QMainWindow):
                 return
             parent = parent.parent()
             
-        # 3. Fallback: If they clicked a title bar instead, find the active dock
         for dock in self.open_docks.values():
             if dock.isActiveWindow() or dock.hasFocus():
                 if isinstance(dock.widget(), DualEditorEngine):
@@ -255,7 +379,7 @@ class CoreFrameworkWindow(QMainWindow):
             hwnd = self.winId()
             rendering_policy = ctypes.c_int(2) 
             set_window_attribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, ctypes.byref(rendering_policy), ctypes.sizeof(rendering_policy))
-        except Exception as e:
+        except Exception:
             pass
 
     def load_application_fonts(self):
@@ -314,7 +438,7 @@ class CoreFrameworkWindow(QMainWindow):
                     
                 if window_state:
                     self.restoreState(QByteArray.fromHex(window_state.encode('utf-8')))
-            except Exception as e:
+            except Exception:
                 pass
 
     def closeEvent(self, event):
@@ -328,7 +452,7 @@ class CoreFrameworkWindow(QMainWindow):
         try:
             with open(SESSION_FILE, 'w', encoding='utf-8') as f:
                 json.dump(session_data, f)
-        except Exception as e:
+        except Exception:
             pass
         event.accept()
     
@@ -371,7 +495,7 @@ class CoreFrameworkWindow(QMainWindow):
             os.makedirs(history_dir)
             if os.name == 'nt': 
                 try: ctypes.windll.kernel32.SetFileAttributesW(history_dir, 2)
-                except: pass
+                except Exception: pass
                     
         timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
         

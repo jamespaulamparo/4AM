@@ -5,10 +5,10 @@ import mistune
 import ctypes
 from datetime import datetime
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QStackedWidget, QPlainTextEdit, 
-                             QTextBrowser, QMenu, QLabel, QApplication, QMessageBox, QListWidget)
+                             QTextBrowser, QMenu, QMessageBox, QListWidget)
 from PySide6.QtGui import (QSyntaxHighlighter, QTextCharFormat, QColor, QFont, 
                            QTextCursor, QImage, QAction)
-from PySide6.QtCore import Qt, Signal, QUrl, QMimeDatabase, QPoint
+from PySide6.QtCore import Qt, Signal, QUrl, QPoint
 
 class FocusHighlighter(QSyntaxHighlighter):
     def __init__(self, document, editor_ref):
@@ -46,12 +46,15 @@ class FocusHighlighter(QSyntaxHighlighter):
 
         is_active = (distance == 0)
 
+        base_size = self.editor_ref.custom_font_size
+        size_map = {1: base_size + 10, 2: base_size + 6, 3: base_size + 4, 4: base_size + 2, 5: base_size, 6: base_size}
+
         for match in re.finditer(r'^(#{1,6}\s+)(.*)', text):
             level = len(match.group(1).strip())
             fmt = QTextCharFormat()
             fmt.setForeground(base_color)
             fmt.setFontWeight(QFont.Bold)
-            fmt.setFontPointSize({1: 24, 2: 20, 3: 18, 4: 16, 5: 14, 6: 14}.get(level, 14))
+            fmt.setFontPointSize(size_map.get(level, base_size))
             self.setFormat(match.start(), match.end() - match.start(), fmt)
 
         self.apply_live_markdown(r'(\*\*.*?\*\*)', text, base_color, weight=QFont.Bold)
@@ -121,7 +124,10 @@ class FocusEditor(QPlainTextEdit):
             QScrollBar::handle:vertical { background: #333333; border-radius: 3px; min-height: 20px; }
             QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; }
         """)
-        self.setFont(QFont("iA Writer Quattro S", 14))
+        
+        self.custom_font_size = 14
+        self.setFont(QFont("iA Writer Quattro S", self.custom_font_size))
+        self.setLineWrapMode(QPlainTextEdit.WidgetWidth)
         self.highlighter = FocusHighlighter(self.document(), self)
         
         self.setContextMenuPolicy(Qt.CustomContextMenu)
@@ -131,11 +137,13 @@ class FocusEditor(QPlainTextEdit):
         self.completer_list.hide()
         self.completer_list.setFixedWidth(200)
         self.completer_list.setMaximumHeight(150)
+        self.completer_list.setFocusPolicy(Qt.NoFocus) 
         self.completer_list.setStyleSheet("""
             QListWidget { background: #262626; color: #ccc; border: 1px solid #5bc0de; border-radius: 4px; font-size: 13px; }
             QListWidget::item { padding: 5px; }
             QListWidget::item:selected { background-color: #333333; color: #5bc0de; font-weight: bold; }
         """)
+        self.completer_list.itemClicked.connect(self._insert_completion)
         
         self.cursorPositionChanged.connect(self.update_focus)
         self.textChanged.connect(self.auto_save) 
@@ -143,7 +151,6 @@ class FocusEditor(QPlainTextEdit):
 
     def mousePressEvent(self, event):
         if event.modifiers() == Qt.ControlModifier and event.button() == Qt.LeftButton:
-            # Compatibility for PySide6 point grabbing
             pos = event.position().toPoint() if hasattr(event, 'position') else event.pos()
             cursor = self.cursorForPosition(pos)
             text_block = cursor.block().text()
@@ -160,7 +167,6 @@ class FocusEditor(QPlainTextEdit):
         super().mousePressEvent(event)
 
     def wheelEvent(self, event):
-        """Hover over ![[img]] text, hold Alt, scroll wheel to magically rewrite the size!"""
         if event.modifiers() == Qt.AltModifier:
             pos = event.position().toPoint() if hasattr(event, 'position') else event.pos()
             cursor = self.cursorForPosition(pos)
@@ -168,27 +174,35 @@ class FocusEditor(QPlainTextEdit):
             text = block.text()
             pos_in_block = cursor.positionInBlock()
 
-            # Find the image tag you are hovering over
             for match in re.finditer(r'!\[\[(.*?\.(?:png|jpg|jpeg|gif|webp))(?:\|(\d+))?\]\]', text, flags=re.IGNORECASE):
                 if match.start() <= pos_in_block <= match.end():
                     img_name = match.group(1)
-                    # Default to 300px if no size exists yet
                     current_size = int(match.group(2)) if match.group(2) else 300 
                     
                     if event.angleDelta().y() > 0:
-                        new_size = current_size + 25 # Scroll up, get bigger
+                        new_size = current_size + 25 
                     else:
-                        new_size = max(50, current_size - 25) # Scroll down, get smaller
+                        new_size = max(50, current_size - 25) 
                         
                     new_tag = f"![[{img_name}|{new_size}]]"
                     
-                    # Highlight the old tag and replace it with the newly sized one
                     cursor.setPosition(block.position() + match.start())
                     cursor.setPosition(block.position() + match.end(), QTextCursor.KeepAnchor)
                     cursor.insertText(new_tag)
                     
                     event.accept()
                     return
+                    
+        elif event.modifiers() == Qt.ControlModifier:
+            if event.angleDelta().y() > 0:
+                self.custom_font_size += 1
+            else:
+                self.custom_font_size = max(8, self.custom_font_size - 1)
+            self.setFont(QFont("iA Writer Quattro S", self.custom_font_size))
+            self.highlighter.rehighlight()
+            event.accept()
+            return
+            
         super().wheelEvent(event)
 
     def _get_vault_root(self):
@@ -285,7 +299,7 @@ class FocusEditor(QPlainTextEdit):
                     os.makedirs(attachments_dir)
                     if os.name == 'nt':
                         try: ctypes.windll.kernel32.SetFileAttributesW(attachments_dir, 2)
-                        except: pass
+                        except Exception: pass
                 
                 filename = datetime.now().strftime("img_%Y%m%d_%H%M%S.png")
                 save_path = os.path.join(attachments_dir, filename)
@@ -349,11 +363,31 @@ class FocusEditor(QPlainTextEdit):
                 self.completer_list.hide()
                 return
 
-        if event.modifiers() == Qt.ControlModifier:
-            if event.key() == Qt.Key_B: self.wrap_selection("**"); return
+        if event.modifiers() == (Qt.ControlModifier | Qt.ShiftModifier):
+            if event.key() == Qt.Key_R:
+                self.pasted_ranges = []
+                self.highlighter.rehighlight()
+                self.auto_save()
+                return
+            elif event.key() == Qt.Key_B: self.wrap_selection("**"); return
             elif event.key() == Qt.Key_I: self.wrap_selection("*"); return
             elif event.key() == Qt.Key_U: self.wrap_selection("<u>", "</u>"); return
             
+        elif event.modifiers() == Qt.ControlModifier:
+            if event.key() == Qt.Key_Equal or event.key() == Qt.Key_Plus:
+                self.custom_font_size += 1
+                self.setFont(QFont("iA Writer Quattro S", self.custom_font_size))
+                self.highlighter.rehighlight()
+                return
+            elif event.key() == Qt.Key_Minus:
+                self.custom_font_size = max(8, self.custom_font_size - 1)
+                self.setFont(QFont("iA Writer Quattro S", self.custom_font_size))
+                self.highlighter.rehighlight()
+                return
+            elif event.key() == Qt.Key_B: self.wrap_selection("**"); return
+            elif event.key() == Qt.Key_I: self.wrap_selection("*"); return
+            elif event.key() == Qt.Key_U: self.wrap_selection("<u>", "</u>"); return
+
         super().keyPressEvent(event)
         
         cursor = self.textCursor()
@@ -391,8 +425,9 @@ class FocusEditor(QPlainTextEdit):
         else:
             self.completer_list.hide()
 
-    def _insert_completion(self):
-        item = self.completer_list.currentItem()
+    def _insert_completion(self, item=None):
+        if not item:
+            item = self.completer_list.currentItem()
         if not item: return
         text = item.text()
         
@@ -453,7 +488,7 @@ class FocusEditor(QPlainTextEdit):
                 with open(meta_path, 'r', encoding='utf-8') as f:
                     data = json.load(f)
                     self.pasted_ranges = data.get("pasted", [])
-            except:
+            except Exception:
                 self.pasted_ranges = []
         else:
             self.pasted_ranges = []
@@ -529,6 +564,9 @@ class MarkdownViewer(QTextBrowser):
 
         processed_text = re.sub(r'!\[\[(.*?\.(?:png|jpg|jpeg|gif|webp))(?:\|(\d+))?\]\]', replace_img, raw_markdown, flags=re.IGNORECASE)
         processed_text = re.sub(r'\[\[(.*?)\]\]', r'<a href="wiki:\1">\1</a>', processed_text)
+        
+        # FIX: The Obsidian "Strict Line Breaks: Off" trick
+        processed_text = processed_text.replace('\n', '  \n')
         
         html = mistune.html(processed_text)
         styled_html = f"""

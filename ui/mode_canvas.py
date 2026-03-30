@@ -1,10 +1,11 @@
 import json
 import mistune
 import os
+import re
 from PySide6.QtWidgets import (QGraphicsView, QGraphicsScene, QGraphicsTextItem, 
                              QGraphicsRectItem, QGraphicsItem, QApplication, QGraphicsPixmapItem,
-                             QMenu, QMessageBox)
-from PySide6.QtCore import Qt, QUrl
+                             QMenu, QMessageBox, QListWidget)
+from PySide6.QtCore import Qt, QUrl, Signal, QPoint
 from PySide6.QtGui import (QFont, QColor, QPainter, QBrush, QPen, QShortcut, 
                            QKeySequence, QTextCursor, QCursor, QMouseEvent, QPixmap, QAction)
 
@@ -13,36 +14,72 @@ class CardTextItem(QGraphicsTextItem):
         super().__init__(parent)
         self.raw_markdown = ""
         self.is_editing = False
+        self.setOpenExternalLinks(False) 
+        self.setTextInteractionFlags(Qt.TextBrowserInteraction)
 
     def render_html(self):
-        html_content = mistune.html(self.raw_markdown)
-        styled_html = f"""
-        <style>
-            body {{ color: #cccccc; font-family: "iA Writer Quattro S"; font-size: 16px; }}
-            h1, h2, h3 {{ color: #ffffff; font-weight: bold; }}
-            strong {{ font-weight: bold; color: #ffffff; }}
-            em {{ font-style: italic; color: #aaaaaa; }}
-            a {{ color: #5bc0de; text-decoration: none; }}
-            blockquote {{ color: #888888; font-style: italic; }}
-        </style>
-        <body>{html_content}</body>
-        """
-        self.setHtml(styled_html)
+            processed_text = re.sub(r'\[\[(.*?)\]\]', r'<a href="wiki:\1">\1</a>', self.raw_markdown)
+            
+            # FIX: The Obsidian "Strict Line Breaks: Off" trick
+            processed_text = processed_text.replace('\n', '  \n')
+            
+            html_content = mistune.html(processed_text)
+            
+            styled_html = f"""
+            <style>
+                body {{ color: #cccccc; font-family: "iA Writer Quattro S"; font-size: 16px; }}
+                h1, h2, h3 {{ color: #ffffff; font-weight: bold; }}
+                strong {{ font-weight: bold; color: #ffffff; }}
+                em {{ font-style: italic; color: #aaaaaa; }}
+                a {{ color: #5bc0de; text-decoration: none; }}
+                blockquote {{ color: #888888; font-style: italic; }}
+            </style>
+            <body>{html_content}</body>
+            """
+            self.setHtml(styled_html)
 
-    def focusInEvent(self, event):
-        self.is_editing = True
-        self.setPlainText(self.raw_markdown)
-        self.setDefaultTextColor(QColor("#cccccc"))
-        self.setFont(QFont("iA Writer Quattro S", 12))
-        super().focusInEvent(event)
+    def mouseDoubleClickEvent(self, event):
+        """Double Click to enter Edit Mode, leaving single clicks free for links!"""
+        if event.button() == Qt.LeftButton:
+            self.is_editing = True
+            self.setTextInteractionFlags(Qt.TextEditorInteraction)
+            self.setPlainText(self.raw_markdown)
+            self.setDefaultTextColor(QColor("#cccccc"))
+            self.setFont(QFont("iA Writer Quattro S", 12))
+            self.setFocus()
+            event.accept()
+        else:
+            super().mouseDoubleClickEvent(event)
 
     def focusOutEvent(self, event):
-        self.is_editing = False
-        self.raw_markdown = self.toPlainText()
-        self.render_html() 
+        # FIX: Only overwrite raw_markdown if we were ACTUALLY in edit mode. 
+        # Prevents the app from deleting your [[ ]] brackets!
+        if self.is_editing:
+            self.raw_markdown = self.toPlainText()
+            self.is_editing = False
+            self.render_html() 
+            self.setTextInteractionFlags(Qt.TextBrowserInteraction)
         super().focusOutEvent(event)
 
     def keyPressEvent(self, event):
+        # 1. Connect to the Canvas Engine's Autocomplete List
+        if self.scene() and self.scene().views():
+            view = self.scene().views()[0]
+            if view.completer_list.isVisible():
+                if event.key() == Qt.Key_Down:
+                    view.completer_list.setCurrentRow((view.completer_list.currentRow() + 1) % view.completer_list.count())
+                    return
+                elif event.key() == Qt.Key_Up:
+                    view.completer_list.setCurrentRow((view.completer_list.currentRow() - 1) % view.completer_list.count())
+                    return
+                elif event.key() in (Qt.Key_Enter, Qt.Key_Return):
+                    view._insert_completion()
+                    return
+                elif event.key() == Qt.Key_Escape:
+                    view.completer_list.hide()
+                    return
+
+        # 2. Standard formatting
         if event.modifiers() == Qt.ControlModifier:
             if event.matches(QKeySequence.Paste):
                 clipboard = QApplication.clipboard()
@@ -51,7 +88,22 @@ class CardTextItem(QGraphicsTextItem):
             elif event.key() == Qt.Key_B: self.wrap_selection("**"); return
             elif event.key() == Qt.Key_I: self.wrap_selection("*"); return
             elif event.key() == Qt.Key_U: self.wrap_selection("<u>", "</u>"); return
+            
         super().keyPressEvent(event)
+        
+        # 3. Check for [[ trigger
+        cursor = self.textCursor()
+        block_text = cursor.block().text()
+        pos = cursor.positionInBlock()
+        
+        match = re.search(r'\[\[([^\]]*)$', block_text[:pos])
+        if match:
+            search_term = match.group(1).lower()
+            if self.scene() and self.scene().views():
+                self.scene().views()[0]._show_completer(self, search_term)
+        else:
+            if self.scene() and self.scene().views():
+                self.scene().views()[0].completer_list.hide()
 
     def wrap_selection(self, prefix, suffix=None):
         if not suffix: suffix = prefix
@@ -87,7 +139,8 @@ class LoreCard(QGraphicsRectItem):
         self.text_item = CardTextItem(self)
         self.text_item.setPos(5, 15) 
         self.text_item.setTextWidth(self.custom_width - 15) 
-        self.text_item.setTextInteractionFlags(Qt.TextEditorInteraction)
+        
+        self.text_item.linkActivated.connect(self._on_link_click)
         
         if raw_markdown:
             self.text_item.raw_markdown = raw_markdown
@@ -101,6 +154,11 @@ class LoreCard(QGraphicsRectItem):
         
         self.text_item.document().contentsChanged.connect(self.auto_resize)
         self.auto_resize()
+
+    def _on_link_click(self, url):
+        # Opens in a new pane seamlessly!
+        if self.scene() and self.scene().views():
+            self.scene().views()[0].link_clicked.emit(url, True) 
 
     def itemChange(self, change, value):
         if change == QGraphicsItem.ItemSelectedHasChanged:
@@ -141,6 +199,8 @@ class LoreCard(QGraphicsRectItem):
 
 
 class CanvasEngine(QGraphicsView):
+    link_clicked = Signal(str, bool)
+
     def __init__(self):
         super().__init__()
         self.scene = QGraphicsScene(self)
@@ -157,11 +217,73 @@ class CanvasEngine(QGraphicsView):
         self.current_file_path = None
         self.scene.changed.connect(self.auto_save) 
         
+        # --- CANVAS AUTOCOMPLETE POPUP ---
+        self.completer_list = QListWidget(self)
+        self.completer_list.hide()
+        self.completer_list.setFixedWidth(200)
+        self.completer_list.setMaximumHeight(150)
+        self.completer_list.setFocusPolicy(Qt.NoFocus) 
+        self.completer_list.setStyleSheet("""
+            QListWidget { background: #262626; color: #ccc; border: 1px solid #5bc0de; border-radius: 4px; font-size: 13px; }
+            QListWidget::item { padding: 5px; }
+            QListWidget::item:selected { background-color: #333333; color: #5bc0de; font-weight: bold; }
+        """)
+        self.completer_list.itemClicked.connect(self._insert_completion)
+        self.active_text_item = None
+        
         QShortcut(QKeySequence("Ctrl+N"), self).activated.connect(self.spawn_card_at_cursor)
         QShortcut(QKeySequence("Ctrl+="), self).activated.connect(self.zoom_in)
         QShortcut(QKeySequence("Ctrl++"), self).activated.connect(self.zoom_in)
         QShortcut(QKeySequence("Ctrl+-"), self).activated.connect(self.zoom_out)
         QShortcut(QKeySequence("Ctrl+0"), self).activated.connect(self.zoom_reset)
+
+    def _show_completer(self, text_item, search_term):
+        self.active_text_item = text_item
+        vault_root = self._get_vault_root()
+        if not vault_root: return
+        
+        self.completer_list.clear()
+        
+        for root, dirs, files in os.walk(vault_root):
+            if ".history" in dirs: dirs.remove(".history")
+            if "_attachments" in dirs: dirs.remove("_attachments")
+            for f in files:
+                if f.endswith('.md') or f.endswith('.canvas'):
+                    name = f.rsplit('.', 1)[0]
+                    if search_term in name.lower():
+                        self.completer_list.addItem(name)
+                        
+        if self.completer_list.count() > 0:
+            self.completer_list.setCurrentRow(0)
+            # Spawn the popup right under the card you are typing in
+            scene_pos = text_item.mapToScene(0, 0)
+            view_pos = self.mapFromScene(scene_pos)
+            self.completer_list.move(view_pos.x() + 10, view_pos.y() + 40)
+            self.completer_list.show()
+            self.completer_list.raise_()
+        else:
+            self.completer_list.hide()
+
+    def _insert_completion(self, item=None):
+        if not item:
+            item = self.completer_list.currentItem()
+        if not item or not self.active_text_item: return
+        text = item.text()
+        
+        cursor = self.active_text_item.textCursor()
+        block_text = cursor.block().text()
+        pos = cursor.positionInBlock()
+        match = re.search(r'\[\[([^\]]*)$', block_text[:pos])
+        
+        if match:
+            length_to_remove = len(match.group(1))
+            for _ in range(length_to_remove):
+                cursor.deletePreviousChar()
+            cursor.insertText(f"{text}]]")
+            self.active_text_item.setTextCursor(cursor)
+            
+        self.completer_list.hide()
+        self.active_text_item = None
 
     def _get_vault_root(self):
         if not self.current_file_path: return None
@@ -187,6 +309,12 @@ class CanvasEngine(QGraphicsView):
         self.scene.addItem(card)
         self.scene.clearSelection()
         card.setSelected(True)
+        # Auto-trigger edit mode so you can type immediately
+        card.text_item.is_editing = True
+        card.text_item.setTextInteractionFlags(Qt.TextEditorInteraction)
+        card.text_item.setPlainText("")
+        card.text_item.setDefaultTextColor(QColor("#cccccc"))
+        card.text_item.setFont(QFont("iA Writer Quattro S", 12))
         card.text_item.setFocus() 
 
     def _handle_image_drop(self, image_data, scene_pos):
@@ -242,6 +370,10 @@ class CanvasEngine(QGraphicsView):
         super().dropEvent(event)
 
     def mousePressEvent(self, event):
+        # Hide completer if you click away
+        if self.completer_list.isVisible():
+            self.completer_list.hide()
+            
         if event.button() == Qt.MiddleButton:
             self.setDragMode(QGraphicsView.ScrollHandDrag)
             fake_event = QMouseEvent(event.type(), event.pos(), event.globalPos(), Qt.LeftButton, event.buttons() | Qt.LeftButton, event.modifiers())
@@ -367,8 +499,8 @@ class CanvasEngine(QGraphicsView):
                 elif card_type == 'image' and vault_root:
                     card = ImageLoreCard(card_data['x'], card_data['y'], card_data['filename'], vault_root, card_data.get('width'), card_data.get('height'))
                     self.scene.addItem(card)
-        except Exception as e:
-            print(f"Error loading canvas: {e}")
+        except Exception:
+            pass
 
     def load_file(self, file_path):
         self.current_file_path = file_path
@@ -395,8 +527,6 @@ class CanvasEngine(QGraphicsView):
 
 
 class ImageLoreCard(QGraphicsPixmapItem):
-    """The Map Engine: An image attachment board on the canvas with Ratio-Locked resizing."""
-    
     def __init__(self, x, y, filename, vault_root, target_w=None, target_h=None):
         self.filename = filename
         self.filepath = os.path.join(vault_root, "_attachments", filename)
@@ -412,7 +542,6 @@ class ImageLoreCard(QGraphicsPixmapItem):
         self.setPos(x, y)
         self.setZValue(1) 
         
-        # Calculate the aspect ratio!
         self.aspect_ratio = self.original_pixmap.width() / max(1, self.original_pixmap.height())
         
         self.target_width = target_w if target_w else self.original_pixmap.width()
@@ -475,7 +604,6 @@ class ImageLoreCard(QGraphicsPixmapItem):
 
     def mouseMoveEvent(self, event):
         if self.resizing:
-            # Ratio Lock: Only calculate width based on mouse, let ratio determine height
             new_w = max(50, event.pos().x())
             self.target_width = new_w
             self.target_height = new_w / self.aspect_ratio
@@ -486,7 +614,6 @@ class ImageLoreCard(QGraphicsPixmapItem):
     def mouseReleaseEvent(self, event):
         if self.resizing:
             self.resizing = False
-            # FIX: Trigger save via direct view call to avoid C++ Signal Type Errors
             if self.scene() and self.scene().views():
                 self.scene().views()[0].auto_save()
         else:

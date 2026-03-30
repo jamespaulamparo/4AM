@@ -28,9 +28,14 @@ class GhostProxyModel(QSortFilterProxyModel):
             
             if file_info.isDir():
                 folder_name = file_info.fileName()
-                ghost_path = os.path.join(file_info.absoluteFilePath(), f"{folder_name}.md")
-                if os.path.exists(ghost_path):
+                ghost_md = os.path.join(file_info.absoluteFilePath(), f"{folder_name}.md")
+                ghost_canvas = os.path.join(file_info.absoluteFilePath(), f"{folder_name}.canvas")
+                
+                if os.path.exists(ghost_md):
                     return f"{folder_name}.md"
+                elif os.path.exists(ghost_canvas):
+                    return f"{folder_name}.canvas"
+                    
         return super().data(proxy_index, role)
 
 class VaultTreeView(QTreeView):
@@ -62,10 +67,11 @@ class VaultTreeView(QTreeView):
         source_path = urls[0].toLocalFile()
         if not source_path or source_path == target_path: return super().dropEvent(event)
             
-        if os.path.isfile(target_path) and target_path.endswith('.md'):
+        # FIX: Drag-and-drop to create ghost folders now supports Canvas files too!
+        if os.path.isfile(target_path) and (target_path.endswith('.md') or target_path.endswith('.canvas')):
             target_dir = os.path.dirname(target_path)
             target_filename = os.path.basename(target_path)
-            target_basename = target_filename.replace('.md', '')
+            target_basename = target_filename.rsplit('.', 1)[0] 
             
             new_folder_path = os.path.join(target_dir, target_basename)
             if not os.path.exists(new_folder_path): os.makedirs(new_folder_path)
@@ -87,8 +93,6 @@ class VaultSidebar(QWidget):
     def __init__(self, parent_window):
         super().__init__()
         self.parent_window = parent_window
-        
-        # Allows you to drag and resize the sidebar to be thinner
         self.setMinimumWidth(150) 
         
         layout = QVBoxLayout(self)
@@ -132,8 +136,6 @@ class VaultSidebar(QWidget):
         self.tree = VaultTreeView()
         self.tree.setModel(self.proxy_model)
         self.tree.setHeaderHidden(True)
-        
-        # Tightens the indent width to be closer to VS Code (12 pixels)
         self.tree.setIndentation(12) 
         
         for i in range(1, 4): self.tree.setColumnHidden(i, True)
@@ -199,9 +201,13 @@ class VaultSidebar(QWidget):
         
         if self.file_model.isDir(source_index):
             folder_name = os.path.basename(file_path)
-            ghost_note_path = os.path.join(file_path, f"{folder_name}.md")
-            if os.path.exists(ghost_note_path):
-                self.file_selected.emit(ghost_note_path, force_new_pane)
+            ghost_md = os.path.join(file_path, f"{folder_name}.md")
+            ghost_canvas = os.path.join(file_path, f"{folder_name}.canvas")
+            
+            if os.path.exists(ghost_md):
+                self.file_selected.emit(ghost_md, force_new_pane)
+            elif os.path.exists(ghost_canvas):
+                self.file_selected.emit(ghost_canvas, force_new_pane)
         else:
             self.file_selected.emit(file_path, force_new_pane)
 
@@ -225,7 +231,7 @@ class VaultSidebar(QWidget):
                     os.remove(path) 
             except PermissionError:
                 QMessageBox.warning(self, "File Locked", "Windows cannot delete this file because it is currently open in a pane. Please close the pane ('X') and try again.")
-            except Exception as e:
+            except Exception:
                 pass
         
     def open_vault_dialog(self):
@@ -255,10 +261,11 @@ class VaultSidebar(QWidget):
         if not target_dir: return 
         file_name, ok = QInputDialog.getText(self, "New Note", "Enter chapter name:")
         if ok and file_name:
+            title = file_name[:-3] if file_name.endswith('.md') else file_name
             if not file_name.endswith('.md'): file_name += '.md'
             full_path = os.path.join(target_dir, file_name)
             with open(full_path, 'w', encoding='utf-8') as f:
-                f.write(f"# {file_name.replace('.md', '')}\n\n")
+                f.write(f"# {title}\n\n")
             self.tree.expand(self.proxy_model.mapFromSource(self.file_model.index(target_dir)))
             self.file_selected.emit(full_path, False)
 

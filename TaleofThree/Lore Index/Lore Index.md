@@ -1,3 +1,0 @@
-# Lore Index
-
-Placeholder text
