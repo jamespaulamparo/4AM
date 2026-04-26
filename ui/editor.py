@@ -7,8 +7,8 @@ from datetime import datetime
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QStackedWidget, QPlainTextEdit, 
                              QTextBrowser, QMenu, QMessageBox, QListWidget)
 from PySide6.QtGui import (QSyntaxHighlighter, QTextCharFormat, QColor, QFont, 
-                           QTextCursor, QImage, QAction)
-from PySide6.QtCore import Qt, Signal, QUrl, QPoint
+                           QTextCursor, QImage, QAction, QTextOption)
+from PySide6.QtCore import Qt, Signal, QUrl, QPoint, QTimer
 
 class FocusHighlighter(QSyntaxHighlighter):
     def __init__(self, document, editor_ref):
@@ -45,31 +45,99 @@ class FocusHighlighter(QSyntaxHighlighter):
         self.setFormat(0, len(text), base_fmt)
 
         is_active = (distance == 0)
+        
+        # OBSIDIAN LIVE PREVIEW MAGIC: Make syntax transparent if line is inactive
+        syntax_color = base_color if is_active else QColor(Qt.transparent)
 
         base_size = self.editor_ref.custom_font_size
         size_map = {1: base_size + 10, 2: base_size + 6, 3: base_size + 4, 4: base_size + 2, 5: base_size, 6: base_size}
 
+        header_colors = {
+            1: "#ff6b8b",  
+            2: "#ff8c69",  
+            3: "#e5b567",  
+            4: "#6cb6ff",  
+            5: "#a3be8c",  
+            6: "#b48ead"   
+        }
+
+        # 1. Headers (Separate syntax # from text)
         for match in re.finditer(r'^(#{1,6}\s+)(.*)', text):
             level = len(match.group(1).strip())
-            fmt = QTextCharFormat()
-            fmt.setForeground(base_color)
-            fmt.setFontWeight(QFont.Bold)
-            fmt.setFontPointSize(size_map.get(level, base_size))
-            self.setFormat(match.start(), match.end() - match.start(), fmt)
+            header_color = QColor(header_colors.get(level, "#ffffff")) if is_active else base_color
+            
+            fmt_syntax = QTextCharFormat()
+            fmt_syntax.setForeground(syntax_color)
+            fmt_syntax.setFontPointSize(size_map.get(level, base_size))
+            self.setFormat(match.start(1), match.end(1) - match.start(1), fmt_syntax)
+            
+            fmt_text = QTextCharFormat()
+            fmt_text.setForeground(header_color)
+            fmt_text.setFontWeight(QFont.Bold)
+            fmt_text.setFontPointSize(size_map.get(level, base_size))
+            self.setFormat(match.start(2), match.end(2) - match.start(2), fmt_text)
 
-        self.apply_live_markdown(r'(\*\*.*?\*\*)', text, base_color, weight=QFont.Bold)
-        self.apply_live_markdown(r'((?<!\*)\*[^\*]+\*)', text, base_color, italic=True)
-        self.apply_live_markdown(r'(_.*?_)', text, base_color, italic=True)
-        
-        quote_color = QColor("#888888") if is_active else base_color
-        self.apply_live_markdown(r'^(>.*)', text, quote_color, italic=True)
+        # 2. Bold
+        for match in re.finditer(r'(\*\*)(.*?)(\*\*)', text):
+            fmt_syntax = QTextCharFormat()
+            fmt_syntax.setForeground(syntax_color)
+            self.setFormat(match.start(1), match.end(1) - match.start(1), fmt_syntax)
+            self.setFormat(match.start(3), match.end(3) - match.start(3), fmt_syntax)
+            
+            fmt_text = QTextCharFormat()
+            fmt_text.setForeground(base_color)
+            fmt_text.setFontWeight(QFont.Bold)
+            self.setFormat(match.start(2), match.end(2) - match.start(2), fmt_text)
 
+        # 3. Italics
+        for match in re.finditer(r'((?<!\*)\*)([^\*]+)(\*)', text):
+            fmt_syntax = QTextCharFormat()
+            fmt_syntax.setForeground(syntax_color)
+            self.setFormat(match.start(1), match.end(1) - match.start(1), fmt_syntax)
+            self.setFormat(match.start(3), match.end(3) - match.start(3), fmt_syntax)
+            
+            fmt_text = QTextCharFormat()
+            fmt_text.setForeground(base_color)
+            fmt_text.setFontItalic(True)
+            self.setFormat(match.start(2), match.end(2) - match.start(2), fmt_text)
+            
+        # 4. Underline
+        for match in re.finditer(r'(<u>)(.*?)(</u>)', text):
+            fmt_syntax = QTextCharFormat()
+            fmt_syntax.setForeground(syntax_color)
+            self.setFormat(match.start(1), match.end(1) - match.start(1), fmt_syntax)
+            self.setFormat(match.start(3), match.end(3) - match.start(3), fmt_syntax)
+            
+            fmt_text = QTextCharFormat()
+            fmt_text.setForeground(base_color)
+            fmt_text.setFontUnderline(True)
+            self.setFormat(match.start(2), match.end(2) - match.start(2), fmt_text)
+
+        # 5. Links
         link_color = QColor("#5bc0de") if is_active else base_color
-        
-        self.apply_live_markdown(r'(!\[\[.*?\]\])', text, QColor("#a3be8c") if is_active else base_color)
-        self.apply_live_markdown(r'(\[\[.*?\]\])', text, link_color)
-        self.apply_live_markdown(r'(\[.*?\]\(.*?\))', text, link_color)
+        for match in re.finditer(r'(\[\[)(.*?)(\]\])', text):
+            fmt_syntax = QTextCharFormat()
+            fmt_syntax.setForeground(syntax_color)
+            self.setFormat(match.start(1), match.end(1) - match.start(1), fmt_syntax)
+            self.setFormat(match.start(3), match.end(3) - match.start(3), fmt_syntax)
+            
+            fmt_text = QTextCharFormat()
+            fmt_text.setForeground(link_color)
+            self.setFormat(match.start(2), match.end(2) - match.start(2), fmt_text)
 
+        # 6. Quotes
+        quote_color = QColor("#888888") if is_active else base_color
+        for match in re.finditer(r'^(>)(.*)', text):
+            fmt_syntax = QTextCharFormat()
+            fmt_syntax.setForeground(syntax_color)
+            self.setFormat(match.start(1), match.end(1) - match.start(1), fmt_syntax)
+            
+            fmt_text = QTextCharFormat()
+            fmt_text.setForeground(quote_color)
+            fmt_text.setFontItalic(True)
+            self.setFormat(match.start(2), match.end(2) - match.start(2), fmt_text)
+
+        # 7. Rainbow Pasted Ranges (Unchanged)
         editor_width = self.editor_ref.viewport().width()
         if editor_width <= 0: editor_width = 800 
 
@@ -99,14 +167,6 @@ class FocusHighlighter(QSyntaxHighlighter):
                     tint_fmt.setForeground(tint_color)
                     self.setFormat(i, 1, tint_fmt)
 
-    def apply_live_markdown(self, pattern, text, color, weight=None, italic=False):
-        for match in re.finditer(pattern, text):
-            fmt = QTextCharFormat()
-            fmt.setForeground(color)
-            if weight: fmt.setFontWeight(weight)
-            if italic: fmt.setFontItalic(True)
-            self.setFormat(match.start(), match.end() - match.start(), fmt)
-
 
 class FocusEditor(QPlainTextEdit):
     text_scanned = Signal(str) 
@@ -128,6 +188,10 @@ class FocusEditor(QPlainTextEdit):
         self.custom_font_size = 14
         self.setFont(QFont("iA Writer Quattro S", self.custom_font_size))
         self.setLineWrapMode(QPlainTextEdit.WidgetWidth)
+        
+        self.setWordWrapMode(QTextOption.WrapAtWordBoundaryOrAnywhere)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        
         self.highlighter = FocusHighlighter(self.document(), self)
         
         self.setContextMenuPolicy(Qt.CustomContextMenu)
@@ -346,7 +410,9 @@ class FocusEditor(QPlainTextEdit):
             else:
                 merged.append(current)
         self.pasted_ranges = [r for r in merged if r[1] > r[0]]
-        self.highlighter.rehighlight()
+        
+        # CRASH FIX: Delay highlighter logic to prevent recursion loops
+        QTimer.singleShot(0, self.highlighter.rehighlight)
 
     def keyPressEvent(self, event):
         if self.completer_list.isVisible():
@@ -461,10 +527,14 @@ class FocusEditor(QPlainTextEdit):
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        app_width = self.width()
+        
+        scrollbar_width = self.verticalScrollBar().width() if self.verticalScrollBar().isVisible() else 0
+        actual_width = event.size().width() - scrollbar_width
+        
         max_text_width = 800 
-        if app_width > max_text_width:
-            empty_space = int((app_width - max_text_width) / 2)
+        
+        if actual_width > max_text_width:
+            empty_space = (actual_width - max_text_width) // 2
             self.setViewportMargins(empty_space, 40, empty_space, 40)
         else:
             self.setViewportMargins(40, 40, 40, 40)
@@ -498,15 +568,18 @@ class FocusEditor(QPlainTextEdit):
 
     def auto_save(self):
         if self.current_file_path:
-            with open(self.current_file_path, 'w', encoding='utf-8') as f:
-                f.write(self.toPlainText())
-            
-            meta_path = self.current_file_path.replace('.md', '.meta.json')
-            meta_data = {
-                "pasted": self.pasted_ranges
-            }
-            with open(meta_path, 'w', encoding='utf-8') as f:
-                json.dump(meta_data, f)
+            try:
+                with open(self.current_file_path, 'w', encoding='utf-8') as f:
+                    f.write(self.toPlainText())
+                
+                meta_path = self.current_file_path.replace('.md', '.meta.json')
+                meta_data = {
+                    "pasted": self.pasted_ranges
+                }
+                with open(meta_path, 'w', encoding='utf-8') as f:
+                    json.dump(meta_data, f)
+            except Exception:
+                pass
 
 
 class MarkdownViewer(QTextBrowser):
@@ -522,6 +595,10 @@ class MarkdownViewer(QTextBrowser):
             QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; }
         """)
         self.setOpenLinks(False) 
+        
+        self.setWordWrapMode(QTextOption.WrapAtWordBoundaryOrAnywhere)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        
         self.anchorClicked.connect(self.handle_click)
         
     def handle_click(self, url):
@@ -529,10 +606,14 @@ class MarkdownViewer(QTextBrowser):
         
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        app_width = self.width()
+        
+        scrollbar_width = self.verticalScrollBar().width() if self.verticalScrollBar().isVisible() else 0
+        actual_width = event.size().width() - scrollbar_width
+        
         max_text_width = 800 
-        if app_width > max_text_width:
-            empty_space = int((app_width - max_text_width) / 2)
+        
+        if actual_width > max_text_width:
+            empty_space = (actual_width - max_text_width) // 2
             self.setViewportMargins(empty_space, 40, empty_space, 40)
         else:
             self.setViewportMargins(40, 40, 40, 40)
@@ -565,14 +646,20 @@ class MarkdownViewer(QTextBrowser):
         processed_text = re.sub(r'!\[\[(.*?\.(?:png|jpg|jpeg|gif|webp))(?:\|(\d+))?\]\]', replace_img, raw_markdown, flags=re.IGNORECASE)
         processed_text = re.sub(r'\[\[(.*?)\]\]', r'<a href="wiki:\1">\1</a>', processed_text)
         
-        # FIX: The Obsidian "Strict Line Breaks: Off" trick
         processed_text = processed_text.replace('\n', '  \n')
         
         html = mistune.html(processed_text)
+        
+        # READING MODE SYNC: Matches your aesthetic colors & sizes
         styled_html = f"""
         <style>
             body {{ color: #cccccc; font-family: "iA Writer Quattro S"; font-size: 18px; line-height: 1.6; padding-top: 40px; }}
-            h1, h2, h3, h4 {{ color: #ffffff; font-weight: bold; margin-top: 1.5em; margin-bottom: 0.5em; }}
+            h1 {{ color: #ff6b8b; font-size: 2.2em; font-weight: bold; margin-top: 1.2em; margin-bottom: 0.5em; }}
+            h2 {{ color: #ff8c69; font-size: 1.8em; font-weight: bold; margin-top: 1.2em; margin-bottom: 0.5em; }}
+            h3 {{ color: #e5b567; font-size: 1.5em; font-weight: bold; margin-top: 1.2em; margin-bottom: 0.5em; }}
+            h4 {{ color: #6cb6ff; font-size: 1.3em; font-weight: bold; margin-top: 1.2em; margin-bottom: 0.5em; }}
+            h5 {{ color: #a3be8c; font-size: 1.1em; font-weight: bold; margin-top: 1.2em; margin-bottom: 0.5em; }}
+            h6 {{ color: #b48ead; font-size: 1.0em; font-weight: bold; margin-top: 1.2em; margin-bottom: 0.5em; }}
             strong {{ color: #ffffff; }}
             em {{ color: #aaaaaa; }}
             a {{ color: #5bc0de; text-decoration: none; font-weight: bold; }}

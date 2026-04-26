@@ -19,10 +19,7 @@ class CardTextItem(QGraphicsTextItem):
 
     def render_html(self):
             processed_text = re.sub(r'\[\[(.*?)\]\]', r'<a href="wiki:\1">\1</a>', self.raw_markdown)
-            
-            # FIX: The Obsidian "Strict Line Breaks: Off" trick
             processed_text = processed_text.replace('\n', '  \n')
-            
             html_content = mistune.html(processed_text)
             
             styled_html = f"""
@@ -39,7 +36,6 @@ class CardTextItem(QGraphicsTextItem):
             self.setHtml(styled_html)
 
     def mouseDoubleClickEvent(self, event):
-        """Double Click to enter Edit Mode, leaving single clicks free for links!"""
         if event.button() == Qt.LeftButton:
             self.is_editing = True
             self.setTextInteractionFlags(Qt.TextEditorInteraction)
@@ -52,8 +48,6 @@ class CardTextItem(QGraphicsTextItem):
             super().mouseDoubleClickEvent(event)
 
     def focusOutEvent(self, event):
-        # FIX: Only overwrite raw_markdown if we were ACTUALLY in edit mode. 
-        # Prevents the app from deleting your [[ ]] brackets!
         if self.is_editing:
             self.raw_markdown = self.toPlainText()
             self.is_editing = False
@@ -62,7 +56,6 @@ class CardTextItem(QGraphicsTextItem):
         super().focusOutEvent(event)
 
     def keyPressEvent(self, event):
-        # 1. Connect to the Canvas Engine's Autocomplete List
         if self.scene() and self.scene().views():
             view = self.scene().views()[0]
             if view.completer_list.isVisible():
@@ -79,7 +72,6 @@ class CardTextItem(QGraphicsTextItem):
                     view.completer_list.hide()
                     return
 
-        # 2. Standard formatting
         if event.modifiers() == Qt.ControlModifier:
             if event.matches(QKeySequence.Paste):
                 clipboard = QApplication.clipboard()
@@ -91,7 +83,6 @@ class CardTextItem(QGraphicsTextItem):
             
         super().keyPressEvent(event)
         
-        # 3. Check for [[ trigger
         cursor = self.textCursor()
         block_text = cursor.block().text()
         pos = cursor.positionInBlock()
@@ -137,8 +128,9 @@ class LoreCard(QGraphicsRectItem):
         self.header.setPen(Qt.NoPen)
         
         self.text_item = CardTextItem(self)
+        # PERFECT PADDING MATH: 5px left offset, subtract 10 total width (5 on right)
         self.text_item.setPos(5, 15) 
-        self.text_item.setTextWidth(self.custom_width - 15) 
+        self.text_item.setTextWidth(self.custom_width - 10) 
         
         self.text_item.linkActivated.connect(self._on_link_click)
         
@@ -147,7 +139,7 @@ class LoreCard(QGraphicsRectItem):
             self.text_item.render_html() 
             
         self.resize_handle = QGraphicsRectItem(self)
-        self.resize_handle.setBrush(QBrush(QColor("#5bc0de"))) 
+        self.resize_handle.setBrush(QBrush(Qt.transparent)) 
         self.resize_handle.setPen(Qt.NoPen)
         self.resize_handle.setCursor(Qt.SizeHorCursor) 
         self.resizing = False
@@ -156,7 +148,6 @@ class LoreCard(QGraphicsRectItem):
         self.auto_resize()
 
     def _on_link_click(self, url):
-        # Opens in a new pane seamlessly!
         if self.scene() and self.scene().views():
             self.scene().views()[0].link_clicked.emit(url, True) 
 
@@ -175,7 +166,7 @@ class LoreCard(QGraphicsRectItem):
         new_height = max(50, doc_height + 25)
         self.setRect(0, 0, self.custom_width, new_height)
         self.header.setRect(0, 0, self.custom_width, 15)
-        self.resize_handle.setRect(self.custom_width - 6, (new_height / 2) - 15, 6, 30)
+        self.resize_handle.setRect(self.custom_width - 8, (new_height / 2) - 15, 8, 30)
 
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton and self.resize_handle.rect().contains(event.pos()):
@@ -188,7 +179,7 @@ class LoreCard(QGraphicsRectItem):
         if self.resizing:
             new_width = max(100, event.pos().x())
             self.custom_width = new_width
-            self.text_item.setTextWidth(self.custom_width - 15)
+            self.text_item.setTextWidth(self.custom_width - 10) # Maintain the 5px right pad
             self.auto_resize() 
         else:
             super().mouseMoveEvent(event)
@@ -204,10 +195,15 @@ class CanvasEngine(QGraphicsView):
     def __init__(self):
         super().__init__()
         self.scene = QGraphicsScene(self)
+        
+        self.scene.setSceneRect(-50000, -50000, 100000, 100000)
         self.setScene(self.scene)
         
         self.setStyleSheet("border: none; background-color: #1a1a1a;")
         self.setRenderHint(QPainter.Antialiasing)
+        
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         
         self.setDragMode(QGraphicsView.RubberBandDrag)
         self.setAcceptDrops(True)
@@ -217,7 +213,6 @@ class CanvasEngine(QGraphicsView):
         self.current_file_path = None
         self.scene.changed.connect(self.auto_save) 
         
-        # --- CANVAS AUTOCOMPLETE POPUP ---
         self.completer_list = QListWidget(self)
         self.completer_list.hide()
         self.completer_list.setFixedWidth(200)
@@ -255,7 +250,6 @@ class CanvasEngine(QGraphicsView):
                         
         if self.completer_list.count() > 0:
             self.completer_list.setCurrentRow(0)
-            # Spawn the popup right under the card you are typing in
             scene_pos = text_item.mapToScene(0, 0)
             view_pos = self.mapFromScene(scene_pos)
             self.completer_list.move(view_pos.x() + 10, view_pos.y() + 40)
@@ -309,7 +303,6 @@ class CanvasEngine(QGraphicsView):
         self.scene.addItem(card)
         self.scene.clearSelection()
         card.setSelected(True)
-        # Auto-trigger edit mode so you can type immediately
         card.text_item.is_editing = True
         card.text_item.setTextInteractionFlags(Qt.TextEditorInteraction)
         card.text_item.setPlainText("")
@@ -370,7 +363,6 @@ class CanvasEngine(QGraphicsView):
         super().dropEvent(event)
 
     def mousePressEvent(self, event):
-        # Hide completer if you click away
         if self.completer_list.isVisible():
             self.completer_list.hide()
             
@@ -511,8 +503,11 @@ class CanvasEngine(QGraphicsView):
 
     def auto_save(self, *args):
         if self.current_file_path:
-            with open(self.current_file_path, 'w', encoding='utf-8') as f:
-                f.write(self.export_canvas_data())
+            try:
+                with open(self.current_file_path, 'w', encoding='utf-8') as f:
+                    f.write(self.export_canvas_data())
+            except Exception:
+                pass
 
     def wheelEvent(self, event):
         if event.modifiers() == Qt.ControlModifier:
@@ -550,7 +545,7 @@ class ImageLoreCard(QGraphicsPixmapItem):
         self.setFlags(QGraphicsItem.ItemIsMovable | QGraphicsItem.ItemIsSelectable | QGraphicsItem.ItemSendsGeometryChanges)
         
         self.resize_handle = QGraphicsRectItem(self)
-        self.resize_handle.setBrush(QBrush(QColor("#5bc0de")))
+        self.resize_handle.setBrush(QBrush(Qt.transparent)) 
         self.resize_handle.setPen(Qt.NoPen)
         self.resize_handle.setCursor(Qt.SizeFDiagCursor)
         self.resizing = False

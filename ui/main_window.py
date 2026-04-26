@@ -40,14 +40,15 @@ class CoreFrameworkWindow(QMainWindow):
         self.set_native_dark_titlebar()
 
         self.setDockNestingEnabled(True)
-
-        self.dummy_central = QWidget()
-        self.dummy_central.setStyleSheet("background-color: #1a1a1a;") 
-        self.setCentralWidget(self.dummy_central)
+        self.setCentralWidget(None)
+        self.setDockOptions(
+            QMainWindow.AllowNestedDocks | 
+            QMainWindow.AllowTabbedDocks | 
+            QMainWindow.AnimatedDocks
+        )
 
         self.sidebar = VaultSidebar(self)
         self.sidebar_dock = QDockWidget("", self)
-        # FIX: Must set object name for saveState to work!
         self.sidebar_dock.setObjectName("SidebarDock")
         self.sidebar_dock.setTitleBarWidget(QWidget()) 
         self.sidebar_dock.setWidget(self.sidebar)
@@ -138,7 +139,6 @@ class CoreFrameworkWindow(QMainWindow):
         self.oracle.search_bar.setFocus()
 
     def route_file_click(self, file_path, force_new_pane=False, target_dock=None):
-        # FIX: Catch navigation errors if a file was deleted manually in the background!
         if not os.path.exists(file_path): 
             return
 
@@ -194,6 +194,13 @@ class CoreFrameworkWindow(QMainWindow):
         
         if active_dock and not force_new_pane:
             old_widget = active_dock.widget()
+            
+            # CRASH FIX: Disconnect and orphans the widget before deletion
+            if old_widget:
+                old_widget.hide()
+                old_widget.setParent(None)
+                old_widget.deleteLater()
+                
             active_dock.setWidget(engine)
             
             title_bar = QWidget()
@@ -250,10 +257,8 @@ class CoreFrameworkWindow(QMainWindow):
             if active_path:
                 del self.open_docks[active_path]
             self.open_docks[file_path] = active_dock
-            old_widget.deleteLater() 
         else:
             new_dock = QDockWidget(file_name, self)
-            # FIX: Adding ObjectName using file_path allows PySide to remember where this dock goes!
             new_dock.setObjectName(file_path)
             
             new_dock.history_back = []

@@ -2,7 +2,7 @@ import os
 import shutil
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QTreeView, 
                              QPushButton, QFileDialog, QFileSystemModel, QInputDialog, 
-                             QAbstractItemView, QMenu, QMessageBox, QApplication)
+                             QAbstractItemView, QMenu, QMessageBox, QApplication, QLineEdit)
 from PySide6.QtCore import Qt, Signal, QFileInfo, QSortFilterProxyModel
 from PySide6.QtGui import QAction
 
@@ -67,7 +67,6 @@ class VaultTreeView(QTreeView):
         source_path = urls[0].toLocalFile()
         if not source_path or source_path == target_path: return super().dropEvent(event)
             
-        # FIX: Drag-and-drop to create ghost folders now supports Canvas files too!
         if os.path.isfile(target_path) and (target_path.endswith('.md') or target_path.endswith('.canvas')):
             target_dir = os.path.dirname(target_path)
             target_filename = os.path.basename(target_path)
@@ -94,6 +93,7 @@ class VaultSidebar(QWidget):
         super().__init__()
         self.parent_window = parent_window
         self.setMinimumWidth(150) 
+        self.setMaximumWidth(150) # Prevents sidebar from swallowing screen space
         
         layout = QVBoxLayout(self)
         layout.setContentsMargins(10, 20, 10, 20)
@@ -170,7 +170,8 @@ class VaultSidebar(QWidget):
             menu.addAction(open_new_action)
 
             rename_action = QAction("Rename", self)
-            rename_action.triggered.connect(lambda checked=False, idx=index: self.tree.edit(idx))
+            # Route it to our custom smart rename function instead of the default editor
+            rename_action.triggered.connect(lambda checked=False, idx=index: self.smart_rename(idx))
             menu.addAction(rename_action)
 
             delete_action = QAction("Delete", self)
@@ -186,6 +187,62 @@ class VaultSidebar(QWidget):
             menu.addAction(new_folder_action)
 
         menu.exec(self.tree.viewport().mapToGlobal(position))
+
+    def smart_rename(self, proxy_index):
+        source_index = self.proxy_model.mapToSource(proxy_index)
+        old_path = self.file_model.filePath(source_index)
+        old_name = os.path.basename(old_path)
+        
+        is_dir = self.file_model.isDir(source_index)
+        
+        # Pop up a dialog to ask for the new name
+        new_name, ok = QInputDialog.getText(self, "Smart Rename", "Enter new name:", QLineEdit.Normal, old_name)
+        if not ok or not new_name or new_name == old_name:
+            return
+            
+        dir_path = os.path.dirname(old_path)
+        new_path = os.path.join(dir_path, new_name)
+        
+        if os.path.exists(new_path):
+            QMessageBox.warning(self, "Error", "A file or folder with that name already exists in this directory.")
+            return
+
+        try:
+            # SCENARIO A: It's just a file. Rename it and its associated metadata.
+            if not is_dir:
+                os.rename(old_path, new_path)
+                
+                old_meta = old_path.replace('.md', '.meta.json')
+                new_meta = new_path.replace('.md', '.meta.json')
+                if os.path.exists(old_meta):
+                    os.rename(old_meta, new_meta)
+                    
+            # SCENARIO B: It's a Ghost Folder. Rename the outer folder AND the inner files.
+            else:
+                os.rename(old_path, new_path)
+                
+                # Check for an internal Markdown ghost file
+                old_ghost_md = os.path.join(new_path, f"{old_name}.md")
+                new_ghost_md = os.path.join(new_path, f"{new_name}.md")
+                if os.path.exists(old_ghost_md):
+                    os.rename(old_ghost_md, new_ghost_md)
+                    
+                    # Don't forget the ghost file's metadata!
+                    old_meta = old_ghost_md.replace('.md', '.meta.json')
+                    new_meta = new_ghost_md.replace('.md', '.meta.json')
+                    if os.path.exists(old_meta):
+                        os.rename(old_meta, new_meta)
+                        
+                # Check for an internal Canvas ghost file
+                old_ghost_canvas = os.path.join(new_path, f"{old_name}.canvas")
+                new_ghost_canvas = os.path.join(new_path, f"{new_name}.canvas")
+                if os.path.exists(old_ghost_canvas):
+                    os.rename(old_ghost_canvas, new_ghost_canvas)
+
+        except PermissionError:
+            QMessageBox.warning(self, "File Locked", "Cannot rename because the file is currently open in a pane. Close it first.")
+        except Exception as e:
+            QMessageBox.warning(self, "Rename Error", f"Failed to rename: {str(e)}")
 
     def trigger_context_open(self, proxy_index):
         self.process_click(proxy_index, force_new_pane=True)
