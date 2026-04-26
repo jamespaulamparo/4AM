@@ -192,6 +192,8 @@ class FocusEditor(QPlainTextEdit):
         self.setWordWrapMode(QTextOption.WrapAtWordBoundaryOrAnywhere)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         
+        self.setViewportMargins(40, 40, 40, 40)
+        
         self.highlighter = FocusHighlighter(self.document(), self)
         
         self.setContextMenuPolicy(Qt.CustomContextMenu)
@@ -525,19 +527,6 @@ class FocusEditor(QPlainTextEdit):
             cursor.setPosition(cursor.position() - len(suffix))
             self.setTextCursor(cursor)
 
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
-        
-        scrollbar_width = self.verticalScrollBar().width() if self.verticalScrollBar().isVisible() else 0
-        actual_width = event.size().width() - scrollbar_width
-        
-        max_text_width = 800 
-        
-        if actual_width > max_text_width:
-            empty_space = (actual_width - max_text_width) // 2
-            self.setViewportMargins(empty_space, 40, empty_space, 40)
-        else:
-            self.setViewportMargins(40, 40, 40, 40)
 
     def update_focus(self):
         cursor = self.textCursor()
@@ -599,24 +588,12 @@ class MarkdownViewer(QTextBrowser):
         self.setWordWrapMode(QTextOption.WrapAtWordBoundaryOrAnywhere)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         
+        self.setViewportMargins(40, 40, 40, 40)
+        
         self.anchorClicked.connect(self.handle_click)
         
     def handle_click(self, url):
         self.link_clicked.emit(url.toString())
-        
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
-        
-        scrollbar_width = self.verticalScrollBar().width() if self.verticalScrollBar().isVisible() else 0
-        actual_width = event.size().width() - scrollbar_width
-        
-        max_text_width = 800 
-        
-        if actual_width > max_text_width:
-            empty_space = (actual_width - max_text_width) // 2
-            self.setViewportMargins(empty_space, 40, empty_space, 40)
-        else:
-            self.setViewportMargins(40, 40, 40, 40)
             
     def update_content(self, raw_markdown):
         vault_root = ""
